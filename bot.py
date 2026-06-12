@@ -740,10 +740,25 @@ async def cmd_ahfft(message: Message, command: CommandObject, bot: Bot):
         return
     
     player_name = command.args.strip()
+    
+    # Проверяем, тренер это или игрок
+    is_coach = player_name.lower().startswith("coach ")
+    if is_coach:
+        player_name = player_name[6:].strip()  # убираем "coach "
+    
     fft_player = get_fft_player(player_name)
     
     if not fft_player:
-        await message.answer(f"<b>Игрок {player_name} не найден в FFT-листе</b>", parse_mode="HTML")
+        await message.answer(f"<b>Игрок/тренер {player_name} не найден в FFT-листе</b>", parse_mode="HTML")
+        return
+    
+    # Проверяем, что роль соответствует (если тренер - роль должна быть Coach)
+    if is_coach and fft_player.get("role") != "Coach":
+        await message.answer(f"<b>{player_name} не является тренером</b>", parse_mode="HTML")
+        return
+    
+    if not is_coach and fft_player.get("role") == "Coach":
+        await message.answer(f"<b>Чтобы взять тренера, используйте /ahfft coach {player_name}</b>", parse_mode="HTML")
         return
 
     price = fft_player.get("price", 0)
@@ -755,20 +770,25 @@ async def cmd_ahfft(message: Message, command: CommandObject, bot: Bot):
     
     team = get_team(user["main_team"])
     
-    players = team["players"].copy()
-    new_player = {
-        "name": fft_player["name"],
-        "rating": fft_player["rating"],
-        "role": fft_player["role"],
-        "status": "main" if len([p for p in players if p.get("status") == "main"]) < 5 else "reserve"
-    }
-    players.append(new_player)
+    if is_coach:
+        # Добавляем тренера
+        update_team(team["team_name"], coach_name=fft_player["name"], coach_rating=fft_player["rating"])
+        await message.answer(f"<b>Вы успешно взяли нового тренера {fft_player['name']} [{fft_player['rating']}] в команду {team['team_name']} из FFT.</b>", parse_mode="HTML")
+    else:
+        # Добавляем игрока
+        players = team["players"].copy()
+        new_player = {
+            "name": fft_player["name"],
+            "rating": fft_player["rating"],
+            "role": fft_player["role"],
+            "status": "main" if len([p for p in players if p.get("status") == "main"]) < 5 else "reserve"
+        }
+        players.append(new_player)
+        update_team(team["team_name"], players=players)
+        await message.answer(f"<b>Вы успешно взяли нового игрока {fft_player['name']} [{fft_player['rating']}] • {fft_player['role']} к себе в команду из FFT.</b>", parse_mode="HTML")
     
-    update_team(team["team_name"], players=players)
-    remove_fft_player(player_name)
-    
+    remove_fft_player(fft_player["name"])
     await update_fft_topic(bot, message.chat.id)
-    await message.answer(f"<b>Вы успешно взяли нового игрока {player_name} к себе в команду из FFT.</b>", parse_mode="HTML")
 
 @router.message(Command("achiev"), F.chat.id == GROUP_ID)
 async def cmd_achiev(message: Message, command: CommandObject):
@@ -811,12 +831,12 @@ async def cmd_transfer(message: Message, command: CommandObject):
         return
     
     if not command.args:
-        await message.answer("<b>Использование: /transfer ник команда цена</b>", parse_mode="HTML")
+        await message.answer("<b>Использование: /transfer ник/тренер команда цена</b>", parse_mode="HTML")
         return
     
     args = command.args.split(maxsplit=2)
     if len(args) != 3:
-        await message.answer("<b>Использование: /transfer m0NESY Team.Spirit 320000</b>", parse_mode="HTML")
+        await message.answer("<b>Использование: /transfer m0NESY Team.Spirit 320000\nИли: /transfer coach xander Team.Spirit 50000</b>", parse_mode="HTML")
         return
     
     player_name, target_team_name, price_str = args
@@ -834,16 +854,25 @@ async def cmd_transfer(message: Message, command: CommandObject):
     if not to_team:
         await message.answer(f"<b>Команда {target_team_name} не найдена</b>", parse_mode="HTML")
         return
-    
-    player = None
-    for p in from_team["players"]:
-        if p["name"].lower() == player_name.lower():
-            player = p
-            break
-    
-    if not player:
-        await message.answer(f"<b>Игрок {player_name} не найден в вашей команде</b>", parse_mode="HTML")
-        return
+
+    is_coach = player_name.lower().startswith("coach ")
+    if is_coach:
+        coach_name = player_name[6:].strip()
+        if from_team.get("coach_name") != coach_name:
+            await message.answer(f"<b>Тренер {coach_name} не найден в вашей команде</b>", parse_mode="HTML")
+            return
+        player_data = {"name": coach_name, "rating": from_team["coach_rating"], "role": "Coach", "is_coach": True}
+    else:
+        player = None
+        for p in from_team["players"]:
+            if p["name"].lower() == player_name.lower():
+                player = p
+                break
+        if not player:
+            await message.answer(f"<b>Игрок {player_name} не найден в вашей команде</b>", parse_mode="HTML")
+            return
+        player_data = player.copy()
+        player_data["is_coach"] = False
     
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -862,10 +891,11 @@ async def cmd_transfer(message: Message, command: CommandObject):
     pending_transfers[transfer_id] = {
         "from_user": user_id,
         "to_user": target_user_id,
-        "player": player.copy(),
+        "player": player_data,
         "price": price,
         "from_team": from_team["team_name"],
-        "to_team": to_team["team_name"]
+        "to_team": to_team["team_name"],
+        "is_coach": is_coach
     }
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -873,8 +903,9 @@ async def cmd_transfer(message: Message, command: CommandObject):
          InlineKeyboardButton(text="НЕТ", callback_data=f"transfer_no:{transfer_id}")]
     ])
     
+    player_type = "тренера" if is_coach else "игрока"
     await message.answer(
-        f"<b>@{target_username}, вам предложили игрока {player['name']} за {price}$. Вы согласны?</b>",
+        f"<b>@{target_username}, вам предложили {player_type} {player_data['name']} за {price}$. Вы согласны?</b>",
         reply_markup=keyboard,
         parse_mode="HTML"
     )
@@ -1383,18 +1414,28 @@ async def transfer_yes(callback: CallbackQuery):
     if to_user_balance < transfer["price"]:
         await callback.answer(f"Недостаточно средств. Нужно {transfer['price']}$", show_alert=True)
         return
-    
-    remove_player_from_team(transfer["from_team"], transfer["player"]["name"])
-    
-    players = to_team["players"].copy()
-    main_count = len([p for p in players if p.get("status") == "main"])
-    transfer["player"]["status"] = "main" if main_count < 5 else "reserve"
-    players.append(transfer["player"])
-    update_team(transfer["to_team"], players=players)
-    
+
+    if transfer.get("is_coach"):
+        remove_coach_from_team(transfer["from_team"])
+        add_coach_to_team(transfer["to_team"], transfer["player"]["name"], transfer["player"]["rating"])
+        
+        update_hltv_player_team(transfer["player"]["name"], transfer["to_team"])
+        update_hltv_profile(transfer["player"]["name"], current_team=transfer["to_team"])
+    else:
+        remove_player_from_team(transfer["from_team"], transfer["player"]["name"])
+        
+        players = to_team["players"].copy()
+        main_count = len([p for p in players if p.get("status") == "main"])
+        transfer["player"]["status"] = "main" if main_count < 5 else "reserve"
+        players.append(transfer["player"])
+        update_team(transfer["to_team"], players=players)
+
+        update_hltv_player_team(transfer["player"]["name"], transfer["to_team"])
+        update_hltv_profile(transfer["player"]["name"], current_team=transfer["to_team"])
+
     update_balance(transfer["from_user"], get_balance(transfer["from_user"]) + transfer["price"])
     update_balance(transfer["to_user"], get_balance(transfer["to_user"]) - transfer["price"])
-    
+
     update_team(transfer["from_team"], 
                 synergy=max(0, from_team["synergy"] - 10),
                 potential=max(0, from_team["potential"] - 5),
@@ -1408,9 +1449,7 @@ async def transfer_yes(callback: CallbackQuery):
                 atmosphere=max(0, to_team["atmosphere"] - 10),
                 happiness=max(0, to_team["happiness"] - 2),
                 spirit=max(0, to_team["spirit"] - 15))
-
-    update_hltv_player_team(transfer["player"]["name"], transfer["to_team"])
-    update_hltv_profile(transfer["player"]["name"], current_team=transfer["to_team"])
+    
     add_transfer_history(transfer["player"]["name"], transfer["from_team"], transfer["to_team"], transfer["price"])
     
     await update_single_hltv_profile(callback.bot, callback.message.chat.id, transfer["player"]["name"])
@@ -1442,25 +1481,42 @@ async def trade_yes(callback: CallbackQuery):
     if callback.from_user.id != trade["to_user"]:
         await callback.answer("Это не ваше предложение", show_alert=True)
         return
-    
-    remove_player_from_team(trade["from_team"], trade["from_player"]["name"])
-    remove_player_from_team(trade["to_team"], trade["to_player"]["name"])
+
+    from_is_coach = trade.get("from_is_coach", False)
+    to_is_coach = trade.get("to_is_coach", False)
+
+    if from_is_coach:
+        remove_coach_from_team(trade["from_team"])
+    else:
+        remove_player_from_team(trade["from_team"], trade["from_player"]["name"])
+
+    if to_is_coach:
+        remove_coach_from_team(trade["to_team"])
+    else:
+        remove_player_from_team(trade["to_team"], trade["to_player"]["name"])
     
     from_team = get_team(trade["from_team"])
     to_team = get_team(trade["to_team"])
+
+    if from_is_coach:
+        add_coach_to_team(trade["to_team"], trade["from_player"]["name"], trade["from_player"]["rating"])
+    else:
+        players_to = to_team["players"].copy()
+        main_count_to = len([p for p in players_to if p.get("status") == "main"])
+        trade["from_player"]["status"] = "main" if main_count_to < 5 else "reserve"
+        players_to.append(trade["from_player"])
+        update_team(trade["to_team"], players=players_to)
+
+    if to_is_coach:
+        add_coach_to_team(trade["from_team"], trade["to_player"]["name"], trade["to_player"]["rating"])
+    else:
+        players_from = from_team["players"].copy()
+        main_count_from = len([p for p in players_from if p.get("status") == "main"])
+        trade["to_player"]["status"] = "main" if main_count_from < 5 else "reserve"
+        players_from.append(trade["to_player"])
+        update_team(trade["from_team"], players=players_from)
     
-    players_from = from_team["players"].copy()
-    players_to = to_team["players"].copy()
-    
-    trade["to_player"]["status"] = "main" if len([p for p in players_from if p.get("status") == "main"]) < 5 else "reserve"
-    trade["from_player"]["status"] = "main" if len([p for p in players_to if p.get("status") == "main"]) < 5 else "reserve"
-    
-    players_from.append(trade["to_player"])
-    players_to.append(trade["from_player"])
-    
-    update_team(trade["from_team"], players=players_from)
-    update_team(trade["to_team"], players=players_to)
-    
+    # Обновление характеристик
     update_team(trade["from_team"],
                 synergy=max(0, from_team["synergy"] - 2),
                 potential=max(0, from_team["potential"] - 5),
@@ -1475,6 +1531,7 @@ async def trade_yes(callback: CallbackQuery):
     update_hltv_player_team(trade["to_player"]["name"], trade["from_team"])
     update_hltv_profile(trade["from_player"]["name"], current_team=trade["to_team"])
     update_hltv_profile(trade["to_player"]["name"], current_team=trade["from_team"])
+
     add_trade_history(trade["from_player"]["name"], trade["to_player"]["name"], trade["from_team"], trade["to_team"])
     
     await update_single_hltv_profile(callback.bot, callback.message.chat.id, trade["from_player"]["name"])
@@ -1680,6 +1737,37 @@ async def update_hltv_profiles_after_match(bot: Bot, team1: Dict, team2: Dict, m
                         save_hltv_message(stat["name"], msg.message_id, topic_id)
                     except Exception as e2:
                         print(f"Критическая ошибка HLTV: {e2}")
+
+@router.message(Command("addcoach"), F.chat.id == GROUP_ID)
+async def cmd_addcoach(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("<b>У вас нет прав</b>", parse_mode="HTML")
+        return
+    
+    if not command.args:
+        await message.answer("<b>Использование: /addcoach команда ник рейтинг</b>", parse_mode="HTML")
+        return
+    
+    args = command.args.split(maxsplit=2)
+    if len(args) != 3:
+        await message.answer("<b>Использование: /addcoach Team.Falcons xander 50.0</b>", parse_mode="HTML")
+        return
+    
+    team_name = args[0].replace(".", " ")
+    coach_name = args[1]
+    try:
+        coach_rating = float(args[2])
+    except:
+        await message.answer("<b>Рейтинг должен быть числом</b>", parse_mode="HTML")
+        return
+    
+    team = get_team(team_name)
+    if not team:
+        await message.answer(f"<b>Команда {team_name} не найдена</b>", parse_mode="HTML")
+        return
+    
+    update_team(team_name, coach_name=coach_name, coach_rating=coach_rating)
+    await message.answer(f"<b>Тренер {coach_name} [{coach_rating}] добавлен в команду {team_name}</b>", parse_mode="HTML")
 
 @router.message(Command("delplayer"), F.chat.id == GROUP_ID)
 async def cmd_delplayer(message: Message, command: CommandObject):
