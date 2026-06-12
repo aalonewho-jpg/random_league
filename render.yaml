@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: randomleaguebot
+    name: random_league
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
