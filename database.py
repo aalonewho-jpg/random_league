@@ -394,6 +394,22 @@ def set_player_status(team_name: str, player_name: str, status: str):
             break
     update_team(team_name, players=players)
 
+def get_coach_by_name(coach_name: str) -> Optional[Dict]:
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT team_name, coach_name, coach_rating FROM teams WHERE coach_name = ?", (coach_name,))
+    row = cur.fetchone()
+    conn.close()
+    if row:
+        return {"team": row[0], "name": row[1], "rating": row[2]}
+    return None
+
+def remove_coach_from_team(team_name: str):
+    update_team(team_name, coach_name=None, coach_rating=0.0)
+
+def add_coach_to_team(team_name: str, coach_name: str, coach_rating: float):
+    update_team(team_name, coach_name=coach_name, coach_rating=coach_rating)
+
 def get_team_players_by_status(team_name: str, status: str) -> List[Dict]:
     team = get_team(team_name)
     if not team:
