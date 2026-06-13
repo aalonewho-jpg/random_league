@@ -114,6 +114,15 @@ def init_db():
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS fft_picks (
+            team_name TEXT,
+            pick_date INTEGER,
+            picks_count INTEGER DEFAULT 0,
+            PRIMARY KEY (team_name, pick_date)
+        )
+    """)
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS topics (
             key TEXT PRIMARY KEY,
             topic_id INTEGER,
@@ -159,6 +168,35 @@ def get_all_users() -> List[Dict]:
         "main_team": r[2],
         "balance": r[3]
     } for r in rows]
+
+def can_pick_from_fft(team_name: str) -> tuple:
+    today = int(time.time() / 86400)
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT picks_count FROM fft_picks WHERE team_name = ? AND pick_date = ?", (team_name, today))
+    row = cur.fetchone()
+    conn.close()
+    
+    if not row:
+        return True, 4, 0
+    picks = row[0]
+    if picks >= 4:
+        seconds_until_tomorrow = (86400 - (time.time() % 86400))
+        return False, 0, int(seconds_until_tomorrow)
+    return True, 4 - picks, 0
+
+def increment_fft_pick(team_name: str):
+    today = int(time.time() / 86400)
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO fft_picks (team_name, pick_date, picks_count)
+        VALUES (?, ?, 1)
+        ON CONFLICT(team_name, pick_date) DO UPDATE SET
+            picks_count = picks_count + 1
+    """, (team_name, today))
+    conn.commit()
+    conn.close()
 
 def create_user(user_id: int, username: str, main_team: str):
     conn = sqlite3.connect(DB_PATH)
