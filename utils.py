@@ -8,12 +8,12 @@ from config import MAP_POOL
 
 FIRST_NAMES = [
     "frozen", "pimp", "lwoq", "prefworld", "vlone", "phzy", "mONESY", "NiKo", "ZyWoo", "device",
-    "s1mple", "electroNic", "Perfecto", "B1T", "flamie", "GuardiaN", "kennyS", "olofmeister",
-    "get_right", "f0rest", "GeT_RiGhT", "shox", "JW", "flusha", "KRIMZ", "TACO", "fer", "coldzera",
+    "pin", "electroNic", "Perfecto", "B1T", "flamie", "GuardiaN", "kennyS", "olofmeister",
+    "dual", "f0rest", "GeT_RiGhT", "shox", "JW", "flusha", "KRIMZ", "TACO", "fer", "coldzera",
     "FalleN", "Stewie2K", "EliGE", "Twistzz", "NAF", "rooRooo", "Jame", "Yekindar", "FL1T",
-    "qikert", "SANJI", "buster", "scooby", "zonic", "karrigan", "rain", "broky", "ropz", "huNter",
+    "qikert", "SANJI", "bust", "scooby", "zonic", "karrigan", "rain", "broky", "ropz", "huNter",
     "nexa", "Hooxi", "stavn", "jabbi", "cadiaN", "TeSeS", "sjuush", "degster", "w0nderful",
-    "zorte", "n0rb3r7", "KaiR0N", "magnojez", "zont1x", "donk", "sh1ro", "chopper", "magixx",
+    "zorte", "n0rb3r7", "KaiR0N", "magnojez", "zont1x", "denpo", "sh1ro", "chopper", "magixx",
     "ArtFr0st", "t3ureau", "Smoggy", "nAts", "chronicle", "Redgar", "d3ffo", "Sheydos", "ANGE1",
     "yay", "victor", "crashies", "Marved", "s0m", "tenZ", "ShahZaM", "dapr", "zekken", "johnqt",
     "Ethan", "boostio", "Cryocells", "jawgemo", "Demon1", "leaf", "Skadoodle", "hiko", "ScreaM",
@@ -22,7 +22,13 @@ FIRST_NAMES = [
     "titan", "cypher", "spectr", "glitch", "Rezzi", "morph", "Zynx", "Kyz", "raptorr", "fury",
     "blast", "warden", "Revenant", "shroud", "ninja", "myth", "highDistortion", "chocoTaco",
     "WackyJacky", "Fugglet", "TGLTN", "purdy", "Kickstart", "Shrimzy", "roth", "relo", "fludd",
-    "sparky", "M1me", "vox"
+    "sparky", "M1me", "vox", "910", "rocket", "mane", "cSO", "zYnt3x", "k1tty", "r0b1n", "s1mpleX",
+    "cL0ud", "n0va", "f0rg0tten", "p1xel", "gh0st", "r3z", "antrop", "morty",
+    "v4mp", "d4rk0", "s4nz", "m4trix", "crypt1c", "bl1tz", "sn1p3r", "w1nt3r", "h4z3", "tr1ck",
+    "v1p3r", "n1ght", "sh4d0w", "ph0en1x", "r0gu3", "v3n0m", "t0x1c", "wr4th", "h4v0c", "m1rage",
+    "f0rc3", "z3r0", "p4r4d0x", "n3cr0", "d3str0y", "r4v3n", "t1t4n", "m0rph", "s0rc3", "n0mad",
+    "crypt0", "v1rus", "r0b0t", "h4ck3r", "s1l3nt", "bl1nd", "wr3ck", "cr1m3", "d3v1l", "s0ulf1re",
+    "p4n1c", "tr0n", "v0rt3x", "n1ghtm4r3", "r0t", "sk1llz", "ch40s", "f4t4l", "n0sc0p3", "x3n0n"
 ]
 ROLES = ["AWP", "Rifler", "Entry Fragger", "Support", "Lurker", "IGL", "Coach"]
 COACH_NAMES = [
@@ -182,20 +188,48 @@ def simulate_match(team1: Dict, team2: Dict, maps_count: int, is_tour: bool = Fa
         score1 = 0
         score2 = 0
 
+        # Основные раунды до 13 побед
         while score1 < 13 and score2 < 13:
             if random.random() < win_prob:
                 score1 += 1
             else:
                 score2 += 1
 
-        while score1 == 13 and score2 == 13:
-            score1 = 13
-            score2 = 13
-            for _ in range(6):
-                if random.random() < win_prob:
-                    score1 += 1
-                else:
-                    score2 += 1
+        # Овертаймы (если 12-12)
+        if score1 == 12 and score2 == 12:
+            score1 = 12
+            score2 = 12
+            # Овертайм до победы с разницей в 2 раунда
+            while True:
+                # Первые 3 раунда овертайма
+                for _ in range(3):
+                    if random.random() < win_prob:
+                        score1 += 1
+                    else:
+                        score2 += 1
+                # Если разница 2+ раунда - победа
+                if abs(score1 - score2) >= 2:
+                    break
+                # Вторые 3 раунда овертайма
+                for _ in range(3):
+                    if random.random() < win_prob:
+                        score1 += 1
+                    else:
+                        score2 += 1
+                # Если разница 2+ раунда - победа
+                if abs(score1 - score2) >= 2:
+                    break
+                # Если всё ещё равный счёт - продолжаем овертайм
+        else:
+            # Овертайм при 13-13 (обычно не бывает, но на всякий случай)
+            while score1 == 13 and score2 == 13:
+                score1 = 13
+                score2 = 13
+                for _ in range(6):
+                    if random.random() < win_prob:
+                        score1 += 1
+                    else:
+                        score2 += 1
 
         if score1 > score2:
             team1_score += 1
@@ -226,17 +260,17 @@ def simulate_match(team1: Dict, team2: Dict, maps_count: int, is_tour: bool = Fa
 
     for idx, player in enumerate(winner_players):
         if idx == 0:
-            kills = random.randint(50, 70)
-            deaths = random.randint(10, 17)
+            kills = random.randint(45, 65)
+            deaths = random.randint(12, 22)
         elif idx == 1:
-            kills = random.randint(40, 60)
-            deaths = random.randint(12, 19)
+            kills = random.randint(38, 55)
+            deaths = random.randint(14, 24)
         elif idx == 2:
-            kills = random.randint(35, 50)
-            deaths = random.randint(13, 20)
+            kills = random.randint(32, 48)
+            deaths = random.randint(16, 26)
         else:
             kills = random.randint(25, 40)
-            deaths = random.randint(14, 22)
+            deaths = random.randint(18, 28)
 
         assists = random.randint(4, 18)
 
@@ -248,16 +282,16 @@ def simulate_match(team1: Dict, team2: Dict, maps_count: int, is_tour: bool = Fa
 
     for idx, player in enumerate(loser_players):
         if idx == 0:
-            kills = random.randint(25, 40)
-            deaths = random.randint(23, 30)
+            kills = random.randint(25, 35)
+            deaths = random.randint(17, 23)
         elif idx == 1:
-            kills = random.randint(20, 35)
-            deaths = random.randint(20, 30)
+            kills = random.randint(20, 30)
+            deaths = random.randint(18, 25)
         else:
-            kills = random.randint(15, 30)
-            deaths = random.randint(18, 37)
+            kills = random.randint(15, 25)
+            deaths = random.randint(20, 28)
 
-        assists = random.randint(2, 15)
+        assists = random.randint(2, 13)
 
         for name in players_data:
             if players_data[name]["team"] == match_loser and name == player["name"]:
@@ -276,7 +310,7 @@ def simulate_match(team1: Dict, team2: Dict, maps_count: int, is_tour: bool = Fa
         kpr = data["kills"] / max(1, total_rounds)
         apr = data["assists"] / max(1, total_rounds)
 
-        rating_value = min(2.5, max(0.3, (kd_ratio * 0.5) + (kpr * 2.0 * 0.3) + (apr * 1.5 * 0.2)))
+        rating_value = min(3.0, max(0.1, (kd_ratio * 0.5) + (kpr * 2.0 * 0.3) + (apr * 1.5 * 0.2)))
 
         stat = {
             "name": name,
