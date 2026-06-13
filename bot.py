@@ -33,7 +33,8 @@ from database import (
     add_trade_history, get_team_players_by_status, set_player_status,
     update_hltv_profile, create_hltv_profile_if_not_exists,
     add_hltv_match_history, update_team_coach, get_hltv_player_stats,
-    update_hltv_player_stats, is_moderator, get_hltv_profile, get_all_users, save_hltv_message, get_hltv_message_id, get_hltv_topic_id, update_hltv_player_team
+    update_hltv_player_stats, is_moderator, get_hltv_profile, get_all_users, save_hltv_message, get_hltv_message_id, get_hltv_topic_id, update_hltv_player_team,
+    can_pick_from_fft, increment_fft_pick
 )
 from utils import (
     generate_random_players, generate_random_coach, generate_random_winrates,
@@ -244,7 +245,7 @@ async def change_role_set(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="Переместить в запас/основу", callback_data="change_lineup")]
     ])
     
-    await callback.message.edit_text(format_roster(team), parse_mode="HTML")
+    await callback.message.edit_text(format_roster(team), reply_markup=keyboard, parse_mode="HTML")
     await callback.answer(f"Роль {player_name} изменена на {new_role}, сыгранность -0.80%")
     await state.clear()
 
@@ -294,6 +295,60 @@ async def swap_to_main_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(SwapPlayerWait.waiting_for_player)
     await callback.answer()
 
+@router.callback_query(F.data.startswith("swap_main:"))
+async def swap_main_select_replacement(callback: CallbackQuery, state: FSMContext):
+    from_player = callback.data.split(":", 1)[1]
+    await state.update_data(from_player=from_player)
+    
+    user_id = callback.from_user.id
+    user = get_user(user_id)
+    team = get_team(user["main_team"])
+    
+    main_players = [p for p in team["players"] if p.get("status") == "main"]
+    
+    buttons = []
+    for p in main_players:
+        buttons.append([InlineKeyboardButton(text=p["name"], callback_data=f"swap_replace:{p['name']}")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="change_lineup")])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await callback.message.edit_text(f"<b>Выберите игрока, которого заменит {from_player}:</b>", reply_markup=keyboard, parse_mode="HTML")
+    await state.set_state(SwapPlayerWait.waiting_for_player)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("swap_replace:"))
+async def swap_main_execute(callback: CallbackQuery, state: FSMContext):
+    to_player = callback.data.split(":", 1)[1]
+    data = await state.get_data()
+    from_player = data.get("from_player")
+    
+    user_id = callback.from_user.id
+    user = get_user(user_id)
+    team = get_team(user["main_team"])
+    
+    players = team["players"].copy()
+    for i, p in enumerate(players):
+        if p["name"] == from_player:
+            players[i]["status"] = "main"
+        elif p["name"] == to_player:
+            players[i]["status"] = "reserve"
+    
+    new_synergy = max(0, team["synergy"] - 0.10)
+    new_happiness = max(0, team["happiness"] - 0.15)
+    new_atmosphere = max(0, team["atmosphere"] - 0.05)
+    
+    update_team(team["team_name"], players=players, synergy=new_synergy, happiness=new_happiness, atmosphere=new_atmosphere)
+    
+    team = get_team(team["team_name"])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Изменить роль игрока", callback_data="change_role")],
+        [InlineKeyboardButton(text="Переместить в запас/основу", callback_data="change_lineup")]
+    ])
+    
+    await callback.message.edit_text(format_roster(team), reply_markup=keyboard, parse_mode="HTML")
+    await callback.answer(f"{from_player} перемещён в основу вместо {to_player}")
+    await state.clear()
+
 @router.callback_query(F.data == "swap_to_reserve")
 async def swap_to_reserve_start(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
@@ -311,60 +366,6 @@ async def swap_to_reserve_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("<b>Выберите игрока из основы:</b>", reply_markup=keyboard, parse_mode="HTML")
     await state.set_state(SwapPlayerWait.waiting_for_player)
     await callback.answer()
-
-@router.callback_query(F.data.startswith("swap_main:"))
-async def swap_main_execute(callback: CallbackQuery, state: FSMContext):
-    player_name = callback.data.split(":", 1)[1]
-    user_id = callback.from_user.id
-    user = get_user(user_id)
-    team = get_team(user["main_team"])
-
-    player = None
-    for p in team["players"]:
-        if p["name"] == player_name and p.get("status") == "reserve":
-            player = p
-            break
-    
-    if not player:
-        await callback.answer("Игрок не найден в резерве", show_alert=True)
-        return
-
-    main_players = [p for p in team["players"] if p.get("status") == "main"]
-    if len(main_players) >= 5:
-        to_swap = min(main_players, key=lambda x: x["rating"])
-        
-        players = team["players"].copy()
-        for i, p in enumerate(players):
-            if p["name"] == player_name:
-                players[i]["status"] = "main"
-            elif p["name"] == to_swap["name"]:
-                players[i]["status"] = "reserve"
-        
-        new_synergy = max(0, team["synergy"] - 0.10)
-        new_happiness = max(0, team["happiness"] - 0.15)
-        new_atmosphere = max(0, team["atmosphere"] - 0.05)
-        
-        update_team(team["team_name"], players=players, synergy=new_synergy, happiness=new_happiness, atmosphere=new_atmosphere)
-        
-        await callback.message.edit_text(format_roster(team), parse_mode="HTML")
-        await callback.answer(f"{player_name} перемещён в основу вместо {to_swap['name']}")
-    else:
-        players = team["players"].copy()
-        for i, p in enumerate(players):
-            if p["name"] == player_name:
-                players[i]["status"] = "main"
-                break
-        
-        update_team(team["team_name"], players=players)
-        team = get_team(user["main_team"])
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-           [InlineKeyboardButton(text="Изменить роль игрока", callback_data="change_role")],
-           [InlineKeyboardButton(text="Переместить в запас/основу", callback_data="change_lineup")]
-        ])
-        await callback.message.edit_text(format_roster(team), parse_mode="HTML")
-        await callback.answer(f"{player_name} перемещён в основу")
-    
-    await state.clear()
 
 @router.callback_query(F.data.startswith("swap_reserve:"))
 async def swap_reserve_execute(callback: CallbackQuery, state: FSMContext):
@@ -393,13 +394,15 @@ async def swap_reserve_execute(callback: CallbackQuery, state: FSMContext):
     new_happiness = max(0, team["happiness"] - 0.15)
     new_atmosphere = max(0, team["atmosphere"] - 0.05)
     
-    team = get_team(user["main_team"])
+    update_team(team["team_name"], players=players, synergy=new_synergy, happiness=new_happiness, atmosphere=new_atmosphere)
+    
+    team = get_team(team["team_name"])
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Изменить роль игрока", callback_data="change_role")],
         [InlineKeyboardButton(text="Переместить в запас/основу", callback_data="change_lineup")]
     ])
     
-    await callback.message.edit_text(format_roster(team), parse_mode="HTML")
+    await callback.message.edit_text(format_roster(team), reply_markup=keyboard, parse_mode="HTML")
     await callback.answer(f"{player_name} перемещён в запас")
     await state.clear()
 
@@ -502,20 +505,19 @@ async def cmd_training(message: Message, command: CommandObject):
     players = team["players"].copy()
     coach_rating = team["coach_rating"]
     
-    gains = calculate_training_gains()
-    
     for i, player in enumerate(players):
-        gain = gains["player"]
+        gain = calculate_training_gains()["player"]
         old_rating = player["rating"]
         new_rating = min(100.0, old_rating + gain)
         players[i]["rating"] = new_rating
         changes.append({"name": player["name"], "old": old_rating, "new": new_rating, "gain": gain})
     
-    coach_gain = gains["player"]
+    coach_gain = calculate_training_gains()["player"]
     old_coach = coach_rating
     new_coach = min(100.0, old_coach + coach_gain)
-    changes.append({"name": "Тренер", "old": old_coach, "new": new_coach, "gain": coach_gain})
+    changes.append({"name": team['coach_name'], "old": old_coach, "new": new_coach, "gain": coach_gain})
     
+    gains = calculate_training_gains()
     new_synergy = min(100.0, team["synergy"] + gains["synergy"])
     new_potential = min(100.0, team["potential"] + gains["potential"])
     new_happiness = min(100.0, team["happiness"] + gains["happiness"])
@@ -540,9 +542,9 @@ async def cmd_training(message: Message, command: CommandObject):
         msg_lines.append(f"<b>{ch['name']} [{ch['old']:.2f}] >> [{ch['new']:.2f}] +{ch['gain']:.2f}</b>")
     msg_lines.append("")
     msg_lines.append(f"<b>Дух игроков: 100% +0%</b>")
-    msg_lines.append(f"<b>Потенциал: 100% +{gains['potential']:.2f}%</b>")
-    msg_lines.append(f"<b>Сыгранность: 100% +{gains['synergy']:.2f}%</b>")
-    msg_lines.append(f"<b>Счастье: 100% +{gains['happiness']:.2f}%</b>")
+    msg_lines.append(f"<b>Потенциал: {team['potential']:.2f}% +{gains['potential']:.2f}%</b>")
+    msg_lines.append(f"<b>Сыгранность: {team['synergy']:.2f}% +{gains['synergy']:.2f}%</b>")
+    msg_lines.append(f"<b>Счастье: {team['happiness']:.2f}% +{gains['happiness']:.2f}%</b>")
     msg_lines.append(f"<b>Атмосфера: 100% +0%</b>")
     
     await message.answer("\n".join(msg_lines), parse_mode="HTML")
@@ -636,18 +638,7 @@ async def cmd_tour(message: Message, command: CommandObject, bot: Bot):
     maps_count = int(bo_format[2])
     result = simulate_match(team1, team2, maps_count, is_tour=True)
     
-    for map_result in result["map_results"]:
-        update_team_winrate(map_result["winner"], map_result["map"], "win")
-        loser = team1_name if map_result["winner"] != team1_name else team2_name
-        update_team_winrate(loser, map_result["map"], "lose")
-    
-    vrs_points = calculate_vrs_points(result["score_team1"], result["score_team2"], maps_count)
-    update_vrs_points(team1_name, vrs_points["team1_points"], 1 if result["winner_team"] == team1_name else 0, 1 if result["winner_team"] == team2_name else 0)
-    update_vrs_points(team2_name, vrs_points["team2_points"], 1 if result["winner_team"] == team2_name else 0, 1 if result["winner_team"] == team1_name else 0)
-    
-    await update_hltv_profiles_after_match(bot, team1, team2, result, message.chat.id)
-    await update_vrs_topic(bot, message.chat.id)
-    
+    # 1. Сначала отправляем результат матча
     msg_lines = [f"<b>Матч {team1_name} vs {team2_name}</b>"]
     msg_lines.append(f"<b>Формат матча: {bo_format.upper()}</b>")
     msg_lines.append("")
@@ -674,6 +665,23 @@ async def cmd_tour(message: Message, command: CommandObject, bot: Bot):
     msg_lines.append(f"<b>EVP матча: {result['evp']}</b>")
     
     await message.answer("\n".join(msg_lines), parse_mode="HTML")
+    
+    # 2. Обновляем винрейты
+    for map_result in result["map_results"]:
+        update_team_winrate(map_result["winner"], map_result["map"], "win")
+        loser = team1_name if map_result["winner"] != team1_name else team2_name
+        update_team_winrate(loser, map_result["map"], "lose")
+    
+    # 3. Обновляем HLTV профили
+    await update_hltv_profiles_after_match(bot, team1, team2, result, message.chat.id)
+    
+    # 4. Обновляем VRS поинты
+    vrs_points = calculate_vrs_points(result["score_team1"], result["score_team2"], maps_count)
+    update_vrs_points(team1_name, vrs_points["team1_points"], 1 if result["winner_team"] == team1_name else 0, 1 if result["winner_team"] == team2_name else 0)
+    update_vrs_points(team2_name, vrs_points["team2_points"], 1 if result["winner_team"] == team2_name else 0, 1 if result["winner_team"] == team1_name else 0)
+    
+    # 5. Обновляем VRS тему
+    await update_vrs_topic(bot, message.chat.id)
 
 @router.message(Command("fft"), F.chat.id == GROUP_ID)
 async def cmd_fft(message: Message, command: CommandObject, bot: Bot):
@@ -739,12 +747,20 @@ async def cmd_ahfft(message: Message, command: CommandObject, bot: Bot):
         await message.answer("<b>Использование: /ahfft ник</b>", parse_mode="HTML")
         return
     
+    # Проверка лимита FFT
+    can_pick, remaining, seconds_left = can_pick_from_fft(user["main_team"])
+    if not can_pick:
+        hours = seconds_left // 3600
+        minutes = (seconds_left % 3600) // 60
+        await message.answer(f"<b>❌ Вы не можете больше забирать игроков из FFT листа.\n⏱ Попробуйте через {hours} ч {minutes} мин</b>", parse_mode="HTML")
+        return
+    
     player_name = command.args.strip()
     
     # Проверяем, тренер это или игрок
     is_coach = player_name.lower().startswith("coach ")
     if is_coach:
-        player_name = player_name[6:].strip()  # убираем "coach "
+        player_name = player_name[6:].strip()
     
     fft_player = get_fft_player(player_name)
     
@@ -752,7 +768,6 @@ async def cmd_ahfft(message: Message, command: CommandObject, bot: Bot):
         await message.answer(f"<b>Игрок/тренер {player_name} не найден в FFT-листе</b>", parse_mode="HTML")
         return
     
-    # Проверяем, что роль соответствует (если тренер - роль должна быть Coach)
     if is_coach and fft_player.get("role") != "Coach":
         await message.answer(f"<b>{player_name} не является тренером</b>", parse_mode="HTML")
         return
@@ -771,11 +786,9 @@ async def cmd_ahfft(message: Message, command: CommandObject, bot: Bot):
     team = get_team(user["main_team"])
     
     if is_coach:
-        # Добавляем тренера
         update_team(team["team_name"], coach_name=fft_player["name"], coach_rating=fft_player["rating"])
-        await message.answer(f"<b>Вы успешно взяли нового тренера {fft_player['name']} [{fft_player['rating']}] в команду {team['team_name']} из FFT.</b>", parse_mode="HTML")
+        await message.answer(f"<b>Вы успешно взяли нового тренера {fft_player['name']} [{fft_player['rating']}] в команду {team['team_name']} из FFT.\n📊 Осталось попыток: {remaining - 1}/4</b>", parse_mode="HTML")
     else:
-        # Добавляем игрока
         players = team["players"].copy()
         new_player = {
             "name": fft_player["name"],
@@ -785,8 +798,9 @@ async def cmd_ahfft(message: Message, command: CommandObject, bot: Bot):
         }
         players.append(new_player)
         update_team(team["team_name"], players=players)
-        await message.answer(f"<b>Вы успешно взяли нового игрока {fft_player['name']} [{fft_player['rating']}] • {fft_player['role']} к себе в команду из FFT.</b>", parse_mode="HTML")
+        await message.answer(f"<b>Вы успешно взяли нового игрока {fft_player['name']} [{fft_player['rating']}] • {fft_player['role']} к себе в команду из FFT.\n📊 Осталось попыток: {remaining - 1}/4</b>", parse_mode="HTML")
     
+    increment_fft_pick(user["main_team"])
     remove_fft_player(fft_player["name"])
     await update_fft_topic(bot, message.chat.id)
 
@@ -819,7 +833,6 @@ async def cmd_achiev(message: Message, command: CommandObject):
     
     add_achievement(team_name, tournament, place)
     await message.answer(f"<b>Достижение добавлено: {team_name} - {tournament} - {place} место</b>", parse_mode="HTML")
-
 
 @router.message(Command("transfer"), F.chat.id == GROUP_ID)
 async def cmd_transfer(message: Message, command: CommandObject):
@@ -989,7 +1002,9 @@ async def cmd_trade(message: Message, command: CommandObject):
         "from_player": my_player.copy(),
         "to_player": target_player.copy(),
         "from_team": my_team["team_name"],
-        "to_team": target_team
+        "to_team": target_team,
+        "from_is_coach": False,
+        "to_is_coach": False
     }
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -1031,19 +1046,22 @@ async def cmd_addplayer(message: Message, command: CommandObject):
         await message.answer(f"<b>Команда {team_name} не найдена</b>", parse_mode="HTML")
         return
     
-    players = team["players"].copy()
-    main_count = len([p for p in players if p.get("status") == "main"])
-    status = "main" if main_count < 5 else "reserve"
-    
-    players.append({
-        "name": name,
-        "rating": rating,
-        "role": role,
-        "status": status
-    })
-    
-    update_team(team_name, players=players)
-    await message.answer(f"<b>Игрок {name} [{rating}] • {role} добавлен в команду {team_name} ({status})</b>", parse_mode="HTML")
+    # Если роль Coach - добавляем тренера
+    if role.lower() == "coach":
+        update_team(team_name, coach_name=name, coach_rating=rating)
+        await message.answer(f"<b>Тренер {name} [{rating}] добавлен в команду {team_name}</b>", parse_mode="HTML")
+    else:
+        players = team["players"].copy()
+        main_count = len([p for p in players if p.get("status") == "main"])
+        status = "main" if main_count < 5 else "reserve"
+        players.append({
+            "name": name,
+            "rating": rating,
+            "role": role,
+            "status": status
+        })
+        update_team(team_name, players=players)
+        await message.answer(f"<b>Игрок {name} [{rating}] • {role} добавлен в команду {team_name} ({status})</b>", parse_mode="HTML")
 
 @router.message(Command("addteam"), F.chat.id == GROUP_ID)
 async def cmd_addteam(message: Message, command: CommandObject):
@@ -1097,6 +1115,8 @@ async def cmd_editn(message: Message, command: CommandObject):
     
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
+    
+    # Обновляем в командах (игроки)
     cur.execute("SELECT team_name, players FROM teams")
     rows = cur.fetchall()
     
@@ -1112,11 +1132,19 @@ async def cmd_editn(message: Message, command: CommandObject):
         if found:
             break
     
-    cur.execute("SELECT * FROM fft_players WHERE name = ?", (old_name,))
-    if cur.fetchone():
-        cur.execute("UPDATE fft_players SET name = ? WHERE name = ?", (new_name, old_name))
-        found = True
+    # Обновляем тренера
+    if not found:
+        cur.execute("UPDATE teams SET coach_name = ? WHERE coach_name = ?", (new_name, old_name))
+        if cur.rowcount > 0:
+            found = True
     
+    # Обновляем в FFT
+    if not found:
+        cur.execute("UPDATE fft_players SET name = ? WHERE name = ?", (new_name, old_name))
+        if cur.rowcount > 0:
+            found = True
+    
+    # Обновляем в HLTV
     cur.execute("UPDATE hltv_profiles SET name = ? WHERE name = ?", (new_name, old_name))
     
     conn.commit()
@@ -1125,7 +1153,7 @@ async def cmd_editn(message: Message, command: CommandObject):
     if found:
         await message.answer(f"<b>Ник {old_name} изменен на {new_name}</b>", parse_mode="HTML")
     else:
-        await message.answer(f"<b>Игрок {old_name} не найден</b>", parse_mode="HTML")
+        await message.answer(f"<b>Игрок/тренер {old_name} не найден</b>", parse_mode="HTML")
 
 @router.message(Command("addmod"), F.chat.id == GROUP_ID)
 async def cmd_addmod(message: Message, command: CommandObject):
@@ -1390,6 +1418,181 @@ async def cmd_pay(message: Message, command: CommandObject, bot: Bot):
     await update_balance_topic(bot, message.chat.id)
     await message.answer(f"<b>Перевод {amount}$ пользователю @{target_username} выполнен</b>", parse_mode="HTML")
 
+@router.message(Command("teamtrain"), F.chat.id == GROUP_ID)
+async def cmd_teamtrain(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("<b>У вас нет прав</b>", parse_mode="HTML")
+        return
+    
+    if not command.args:
+        await message.answer("<b>Использование: /teamtrain команда1 команда2 команда3 ...</b>", parse_mode="HTML")
+        return
+    
+    team_names = command.args.split()
+    results = []
+    
+    for team_name in team_names:
+        team_name = team_name.replace(".", " ")
+        team = get_team(team_name)
+        if not team:
+            results.append(f"❌ {team_name} - не найдена")
+            continue
+        
+        players = team["players"].copy()
+        coach_rating = team["coach_rating"]
+        
+        changes = []
+        for i, player in enumerate(players):
+            gain = calculate_training_gains()["player"]
+            old_rating = player["rating"]
+            new_rating = min(100.0, old_rating + gain)
+            players[i]["rating"] = new_rating
+            changes.append(f"{player['name']} +{gain:.2f}")
+        
+        coach_gain = calculate_training_gains()["player"]
+        new_coach = min(100.0, coach_rating + coach_gain)
+        changes.append(f"Тренер {team['coach_name']} +{coach_gain:.2f}")
+        
+        gains = calculate_training_gains()
+        new_synergy = min(100.0, team["synergy"] + gains["synergy"])
+        new_potential = min(100.0, team["potential"] + gains["potential"])
+        new_happiness = min(100.0, team["happiness"] + gains["happiness"])
+        
+        update_team(
+            team_name,
+            players=players,
+            coach_rating=new_coach,
+            synergy=new_synergy,
+            potential=new_potential,
+            happiness=new_happiness
+        )
+        
+        results.append(f"✅ {team_name} - {', '.join(changes[:3])}...")
+    
+    await message.answer("\n".join(results), parse_mode="HTML")
+
+@router.message(Command("rating"), F.chat.id == GROUP_ID)
+async def cmd_rating(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("<b>У вас нет прав</b>", parse_mode="HTML")
+        return
+    
+    if not command.args:
+        await message.answer("<b>Использование: /rating ник новый_рейтинг</b>", parse_mode="HTML")
+        return
+    
+    args = command.args.split()
+    if len(args) != 2:
+        await message.answer("<b>Использование: /rating m0NESY 15.50</b>", parse_mode="HTML")
+        return
+    
+    player_name, rating_str = args
+    try:
+        new_rating = float(rating_str)
+        if new_rating < 0 or new_rating > 100:
+            await message.answer("<b>Рейтинг должен быть от 0 до 100</b>", parse_mode="HTML")
+            return
+    except:
+        await message.answer("<b>Рейтинг должен быть числом</b>", parse_mode="HTML")
+        return
+    
+    found = False
+    
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    
+    # Проверяем тренера
+    cur.execute("SELECT team_name FROM teams WHERE coach_name = ?", (player_name,))
+    row = cur.fetchone()
+    if row:
+        update_team(row[0], coach_rating=new_rating)
+        found = True
+    
+    # Проверяем игрока
+    if not found:
+        cur.execute("SELECT team_name, players FROM teams")
+        rows = cur.fetchall()
+        for team_name_db, players_json in rows:
+            players = json.loads(players_json)
+            for i, p in enumerate(players):
+                if p["name"].lower() == player_name.lower():
+                    players[i]["rating"] = new_rating
+                    cur.execute("UPDATE teams SET players = ? WHERE team_name = ?", (json.dumps(players), team_name_db))
+                    found = True
+                    break
+            if found:
+                break
+    
+    # Проверяем FFT
+    if not found:
+        cur.execute("UPDATE fft_players SET rating = ? WHERE name = ?", (new_rating, player_name))
+        if cur.rowcount > 0:
+            found = True
+    
+    conn.commit()
+    conn.close()
+    
+    if found:
+        await message.answer(f"<b>✅ Рейтинг {player_name} изменён на {new_rating}</b>", parse_mode="HTML")
+    else:
+        await message.answer(f"<b>❌ Игрок/тренер {player_name} не найден</b>", parse_mode="HTML")
+
+@router.message(Command("delplayer"), F.chat.id == GROUP_ID)
+async def cmd_delplayer(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("<b>У вас нет прав на эту команду</b>", parse_mode="HTML")
+        return
+    
+    if not command.args:
+        await message.answer("<b>Использование: /delplayer ник_игрока</b>", parse_mode="HTML")
+        return
+    
+    player_name = command.args.strip()
+    found = False
+    
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    
+    # Проверяем тренера
+    cur.execute("SELECT team_name FROM teams WHERE coach_name = ?", (player_name,))
+    row = cur.fetchone()
+    if row:
+        update_team(row[0], coach_name=None, coach_rating=0.0)
+        found = True
+    
+    # Проверяем игрока
+    if not found:
+        cur.execute("SELECT team_name, players FROM teams")
+        rows = cur.fetchall()
+        for team_name_db, players_json in rows:
+            players = json.loads(players_json)
+            for i, p in enumerate(players):
+                if p["name"].lower() == player_name.lower():
+                    players.pop(i)
+                    cur.execute("UPDATE teams SET players = ? WHERE team_name = ?", (json.dumps(players), team_name_db))
+                    found = True
+                    break
+            if found:
+                break
+    
+    # Проверяем FFT
+    if not found:
+        cur.execute("DELETE FROM fft_players WHERE name = ?", (player_name,))
+        if cur.rowcount > 0:
+            found = True
+
+    if found:
+        cur.execute("DELETE FROM hltv_profiles WHERE name = ?", (player_name,))
+        cur.execute("DELETE FROM hltv_messages WHERE player_name = ?", (player_name,))
+    
+    conn.commit()
+    conn.close()
+    
+    if found:
+        await message.answer(f"<b>✅ Игрок/тренер {player_name} удалён из лиги!</b>", parse_mode="HTML")
+    else:
+        await message.answer(f"<b>❌ Игрок/тренер {player_name} не найден в лиге</b>", parse_mode="HTML")
+
 @router.callback_query(F.data.startswith("transfer_yes:"))
 async def transfer_yes(callback: CallbackQuery):
     transfer_id = callback.data.split(":")[1]
@@ -1459,7 +1662,6 @@ async def transfer_yes(callback: CallbackQuery):
     await callback.message.edit_text("<b>Трансфер успешно завершен!</b>", parse_mode="HTML")
     await callback.answer()
 
-
 @router.callback_query(F.data.startswith("transfer_no:"))
 async def transfer_no(callback: CallbackQuery):
     transfer_id = callback.data.split(":")[1]
@@ -1467,7 +1669,6 @@ async def transfer_no(callback: CallbackQuery):
         del pending_transfers[transfer_id]
     await callback.message.edit_text("<b>Трансфер не удался</b>", parse_mode="HTML")
     await callback.answer()
-
 
 @router.callback_query(F.data.startswith("trade_yes:"))
 async def trade_yes(callback: CallbackQuery):
@@ -1516,7 +1717,6 @@ async def trade_yes(callback: CallbackQuery):
         players_from.append(trade["to_player"])
         update_team(trade["from_team"], players=players_from)
     
-    # Обновление характеристик
     update_team(trade["from_team"],
                 synergy=max(0, from_team["synergy"] - 2),
                 potential=max(0, from_team["potential"] - 5),
@@ -1540,6 +1740,14 @@ async def trade_yes(callback: CallbackQuery):
     del pending_trades[trade_id]
     
     await callback.message.edit_text("<b>Трейд игроками был завершен, поздравляем!</b>", parse_mode="HTML")
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("trade_no:"))
+async def trade_no(callback: CallbackQuery):
+    trade_id = callback.data.split(":")[1]
+    if trade_id in pending_trades:
+        del pending_trades[trade_id]
+    await callback.message.edit_text("<b>Трейд был отклонен, видимо, не успешно.</b>", parse_mode="HTML")
     await callback.answer()
 
 async def update_single_hltv_profile(bot: Bot, chat_id: int, player_name: str):
@@ -1570,14 +1778,6 @@ async def update_single_hltv_profile(bot: Bot, chat_id: int, player_name: str):
         print(f"Обновлён профиль {player_name} в теме")
     except Exception as e:
         print(f"Ошибка обновления {player_name}: {e}")
-
-@router.callback_query(F.data.startswith("trade_no:"))
-async def trade_no(callback: CallbackQuery):
-    trade_id = callback.data.split(":")[1]
-    if trade_id in pending_trades:
-        del pending_trades[trade_id]
-    await callback.message.edit_text("<b>Трейд был отклонен, видимо, не успешно.</b>", parse_mode="HTML")
-    await callback.answer()
 
 async def update_balance_topic(bot: Bot, chat_id: int):
     topic_data = get_balance_topic_data()
@@ -1737,86 +1937,6 @@ async def update_hltv_profiles_after_match(bot: Bot, team1: Dict, team2: Dict, m
                         save_hltv_message(stat["name"], msg.message_id, topic_id)
                     except Exception as e2:
                         print(f"Критическая ошибка HLTV: {e2}")
-
-@router.message(Command("addcoach"), F.chat.id == GROUP_ID)
-async def cmd_addcoach(message: Message, command: CommandObject):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("<b>У вас нет прав</b>", parse_mode="HTML")
-        return
-    
-    if not command.args:
-        await message.answer("<b>Использование: /addcoach команда ник рейтинг</b>", parse_mode="HTML")
-        return
-    
-    args = command.args.split(maxsplit=2)
-    if len(args) != 3:
-        await message.answer("<b>Использование: /addcoach Team.Falcons xander 50.0</b>", parse_mode="HTML")
-        return
-    
-    team_name = args[0].replace(".", " ")
-    coach_name = args[1]
-    try:
-        coach_rating = float(args[2])
-    except:
-        await message.answer("<b>Рейтинг должен быть числом</b>", parse_mode="HTML")
-        return
-    
-    team = get_team(team_name)
-    if not team:
-        await message.answer(f"<b>Команда {team_name} не найдена</b>", parse_mode="HTML")
-        return
-    
-    update_team(team_name, coach_name=coach_name, coach_rating=coach_rating)
-    await message.answer(f"<b>Тренер {coach_name} [{coach_rating}] добавлен в команду {team_name}</b>", parse_mode="HTML")
-
-@router.message(Command("delplayer"), F.chat.id == GROUP_ID)
-async def cmd_delplayer(message: Message, command: CommandObject):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("<b>У вас нет прав на эту команду</b>", parse_mode="HTML")
-        return
-    
-    if not command.args:
-        await message.answer("<b>Использование: /delplayer ник_игрока</b>", parse_mode="HTML")
-        return
-    
-    player_name = command.args.strip()
-
-    found = False
-    team_name = None
-    
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT team_name, players FROM teams")
-    rows = cur.fetchall()
-    
-    for team_name_db, players_json in rows:
-        players = json.loads(players_json)
-        for i, p in enumerate(players):
-            if p["name"].lower() == player_name.lower():
-                players.pop(i)
-                cur.execute("UPDATE teams SET players = ? WHERE team_name = ?", (json.dumps(players), team_name_db))
-                found = True
-                team_name = team_name_db
-                break
-        if found:
-            break
-    
-    if not found:
-        cur.execute("DELETE FROM fft_players WHERE name = ?", (player_name,))
-        if cur.rowcount > 0:
-            found = True
-
-    if found:
-        cur.execute("DELETE FROM hltv_profiles WHERE name = ?", (player_name,))
-        cur.execute("DELETE FROM hltv_messages WHERE player_name = ?", (player_name,))
-    
-    conn.commit()
-    conn.close()
-    
-    if found:
-        await message.answer(f"<b>Игрок {player_name} удалён из лиги!</b>", parse_mode="HTML")
-    else:
-        await message.answer(f"<b>Игрок {player_name} не найден в лиге</b>", parse_mode="HTML")
 
 async def ping_self():
     bot_url = os.environ.get("RENDER_EXTERNAL_URL", "")
