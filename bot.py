@@ -306,13 +306,36 @@ async def swap_main_select_replacement(callback: CallbackQuery, state: FSMContex
     
     main_players = [p for p in team["players"] if p.get("status") == "main"]
     
+    # Если в основном составе меньше 5 игроков - добавляем без замены
+    if len(main_players) < 5:
+        # Сразу перемещаем без выбора замены
+        players = team["players"].copy()
+        for i, p in enumerate(players):
+            if p["name"] == from_player:
+                players[i]["status"] = "main"
+                break
+        
+        update_team(team["team_name"], players=players)
+        
+        team = get_team(team["team_name"])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Изменить роль игрока", callback_data="change_role")],
+            [InlineKeyboardButton(text="Переместить в запас/основу", callback_data="change_lineup")]
+        ])
+        
+        await callback.message.edit_text(format_roster(team), reply_markup=keyboard, parse_mode="HTML")
+        await callback.answer(f"{from_player} добавлен в основу (теперь {len(main_players) + 1}/5)")
+        await state.clear()
+        return
+    
+    # Если в основе уже 5 игроков - выбираем кого заменить
     buttons = []
     for p in main_players:
         buttons.append([InlineKeyboardButton(text=p["name"], callback_data=f"swap_replace:{p['name']}")])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="change_lineup")])
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await callback.message.edit_text(f"<b>Выберите игрока, которого заменит {from_player}:</b>", reply_markup=keyboard, parse_mode="HTML")
+    await callback.message.edit_text(f"<b>В основе уже 5 игроков. Выберите, кого заменит {from_player}:</b>", reply_markup=keyboard, parse_mode="HTML")
     await state.set_state(SwapPlayerWait.waiting_for_player)
     await callback.answer()
 
@@ -357,16 +380,20 @@ async def swap_to_reserve_start(callback: CallbackQuery, state: FSMContext):
     
     main_players = [p for p in team["players"] if p.get("status") == "main"]
     
+    if len(main_players) <= 1:
+        await callback.answer("Нельзя убрать последнего игрока из основы!", show_alert=True)
+        return
+    
     buttons = []
     for p in main_players:
         buttons.append([InlineKeyboardButton(text=p["name"], callback_data=f"swap_reserve:{p['name']}")])
-    buttons.append([InlineKeyboardButton(text="◀Назад", callback_data="change_lineup")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="change_lineup")])
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await callback.message.edit_text("<b>Выберите игрока из основы:</b>", reply_markup=keyboard, parse_mode="HTML")
+    await callback.message.edit_text("<b>Выберите игрока из основы для перемещения в резерв:</b>", reply_markup=keyboard, parse_mode="HTML")
     await state.set_state(SwapPlayerWait.waiting_for_player)
     await callback.answer()
-
+    
 @router.callback_query(F.data.startswith("swap_reserve:"))
 async def swap_reserve_execute(callback: CallbackQuery, state: FSMContext):
     player_name = callback.data.split(":", 1)[1]
